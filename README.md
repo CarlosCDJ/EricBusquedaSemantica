@@ -1,9 +1,57 @@
 # Guía del repositorio
 
+0. [Ejecutar la versión actual y regenerar el entorno en Windows](#0-ejecutar-la-versión-actual-y-regenerar-el-entorno-en-windows)
 1. [Instalación y ejecución en este equipo Windows](#1-instalación-y-ejecución-en-este-equipo-windows)
 2. [README original en inglés](#2-readme-original-en-inglés)
 3. [Traducción del README al español](#3-traducción-del-readme-al-español)
 4. [Adaptar el proyecto a un nuevo modelo de embeddings](#4-adaptar-el-proyecto-a-un-nuevo-modelo-de-embeddings)
+
+---
+
+# 0. Ejecutar la versión actual y regenerar el entorno en Windows
+
+**Empieza aquí para ejecutar la versión actual**, que usa el modelo remoto de NVIDIA a través de OpenRouter. El apartado 1 y los README original y traducido conservan la historia y las instrucciones de la versión anterior, con EmbeddingGemma 2 local; no describen el funcionamiento actual en todos sus detalles.
+
+## A. Regenerar `app\.venv` si se ha borrado
+
+Solo hay que hacer estos pasos cuando el entorno virtual no existe o se quiere volver a crearlo. Requieren Python 3.14 y acceso a Internet para instalar las bibliotecas. Abre PowerShell y ejecuta:
+
+```powershell
+cd 'C:\Users\cardo\OneDrive\Formacion Compatida\OtrosProyectos\EricBusquedaSemantica\app'
+py -3.14 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Esto crea `app\.venv` e instala las dependencias de la aplicación. **No descarga ni ejecuta el modelo local EmbeddingGemma 2**: el modelo actual funciona en el servicio remoto. Si el proyecto está en otra ruta, adapta el comando `cd`.
+
+## B. Configurar la clave y arrancar
+
+En esa misma ventana de PowerShell, situada en `app`, ejecuta:
+
+```powershell
+$clave = Read-Host 'Clave de OpenRouter' -AsSecureString
+$env:OPENROUTER_API_KEY = [System.Net.NetworkCredential]::new('', $clave).Password
+Remove-Variable clave
+.\.venv\Scripts\python.exe search.py
+```
+
+Introduce o pega la clave **solo cuando la solicite PowerShell**; no la pegues en el chat ni la guardes en el código. La variable estará disponible en esa ventana y en sus procesos hijos hasta que se cierre o se elimine con `Remove-Item Env:OPENROUTER_API_KEY`. Si abres otra terminal tendrás que configurarla de nuevo.
+
+La aplicación abre normalmente **http://127.0.0.1:8765**. Desde ahí puedes seleccionar una carpeta, indexarla y buscar. Deja PowerShell abierto mientras la uses; pulsa **Ctrl+C** en esa terminal para detenerla y cierra su ventana del navegador.
+
+**Privacidad y límites:** el índice se guarda localmente, pero las imágenes preparadas, los fragmentos de texto y las consultas enviados para generar vectores salen del ordenador hacia OpenRouter. Usa primero los ejemplos. El modelo `nvidia/llama-nemotron-embed-vl-1b-v2:free` tiene límites de uso y disponibilidad; la versión actual aún no gestiona automáticamente las pausas por cuota ni conserva los avances parciales si se interrumpe una indexación.
+
+## C. Qué ocurre si se borran carpetas generadas
+
+Con el programa detenido y su ventana del navegador cerrada:
+
+| Carpeta | Consecuencia de borrarla |
+|---|---|
+| `app\.venv` | Se elimina el entorno de Python. Para volver a ejecutar la aplicación, realiza los pasos A y B. |
+| `app\.chrome-app` | Se elimina el perfil de navegador usado por la aplicación, incluidos sus datos de perfil; se creará de nuevo al abrirla en modo ventana. |
+| `app\indexes` | Se eliminan los índices y miniaturas guardados; habrá que volver a indexar las carpetas. No afecta a los archivos originales. |
+
+No borres `app\web`: contiene la interfaz. Aunque estas carpetas generadas están excluidas de Git, pueden ocupar espacio o sincronizarse en OneDrive. Si se conserva `app\indexes`, borrar `.venv` o `.chrome-app` no elimina los índices.
 
 ---
 
