@@ -3,6 +3,7 @@
 1. [Instalación y ejecución en este equipo Windows](#1-instalación-y-ejecución-en-este-equipo-windows)
 2. [README original en inglés](#2-readme-original-en-inglés)
 3. [Traducción del README al español](#3-traducción-del-readme-al-español)
+4. [Adaptar el proyecto a un nuevo modelo de embeddings](#4-adaptar-el-proyecto-a-un-nuevo-modelo-de-embeddings)
 
 ---
 
@@ -1047,3 +1048,39 @@ El generador usa una semilla aleatoria fija, por lo que los nombres de los archi
 - **Capturas y PDF:** generados para esta demostración. Todas las empresas, personas y cantidades son ficticias.
 
 Creado para un vídeo del canal de YouTube [@ericrisco](https://youtube.com/@ericrisco), en español, sobre lo que permite hacer EmbeddingGemma 2 en tu propio ordenador.
+
+---
+
+# 4. Adaptar el proyecto a un nuevo modelo de embeddings
+
+Adapta este proyecto para sustituir EmbeddingGemma 2 local por el modelo gratuito `nvidia/llama-nemotron-embed-vl-1b-v2:free` de OpenRouter. Mantén la búsqueda de texto e imágenes y el almacenamiento local de índices. Revisa antes el código y la disponibilidad del modelo. No uses ni expongas mi API key sin indicarme cómo configurarla de forma segura. Prueba primero con archivos de ejemplo.
+
+## Adaptación para OpenRouter
+
+La aplicación conserva la preparación de imágenes y PDF, el cálculo de similitudes y los índices locales. La diferencia es que **envía las imágenes preparadas, el texto extraído y las consultas a OpenRouter** para obtener los vectores. Necesita conexión a Internet. No envíes documentos privados sin revisar las condiciones de OpenRouter y del proveedor.
+
+El modelo solicitado es exclusivamente `nvidia/llama-nemotron-embed-vl-1b-v2:free`: no se cambia automáticamente a un modelo de pago. Su precio publicado era cero al consultarlo, pero pueden existir límites y la disponibilidad y las condiciones pueden cambiar. La presencia de una clave no garantiza que sea válida ni que el modelo esté disponible.
+
+Los índices hechos con EmbeddingGemma 2 no son compatibles con el nuevo modelo: la aplicación no los cargará ni reutilizará. Al indexar de nuevo la misma carpeta, un índice anterior existente se sustituirá después de completar la nueva indexación. Si necesitas conservarlo, haz una copia antes de reindexar. Los archivos originales no se modifican.
+
+### Preparación en Windows
+
+Desde PowerShell, en la carpeta de la aplicación, utiliza el entorno virtual e instala las dependencias necesarias. En este equipo se creó de nuevo `app\.venv` para la adaptación, porque el anterior ya no estaba presente. En otro equipo, si aún no existe, créalo primero con `py -3.14 -m venv .venv`:
+
+```powershell
+cd app
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Para configurar la clave **sin escribirla en el chat ni guardarla en el código**, ejecuta lo siguiente y pégala únicamente en el aviso privado de PowerShell:
+
+```powershell
+$clave = Read-Host 'Clave de OpenRouter' -AsSecureString
+$env:OPENROUTER_API_KEY = [System.Net.NetworkCredential]::new('', $clave).Password
+Remove-Variable clave
+.\.venv\Scripts\python.exe search.py
+```
+
+La variable queda disponible en esa ventana y en los procesos que inicie, hasta que se cierre o se elimine con `Remove-Item Env:OPENROUTER_API_KEY`. No compartas capturas de la clave. La aplicación indica que está configurada si la variable existe, pero **solo una petición real confirma si la clave y el servicio funcionan**.
+
+Para las primeras pruebas, selecciona únicamente `demo-pequena/`. Indexar envía sus imágenes y texto al servicio; buscar por texto o por una imagen nueva también envía esa consulta. La búsqueda de similares a partir de un elemento ya indexado utiliza sus vectores guardados. El modelo remoto puede producir resultados distintos del modelo original.

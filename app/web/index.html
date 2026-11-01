@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EmbeddingGemma 2 Local Search</title>
+<title>Semantic Search · OpenRouter</title>
 <style>
 :root{
   --bg:#0d0e11; --layer:#15161a; --layer2:#1c1d22; --border:#2a2b31;
@@ -131,7 +131,7 @@ body.scores .name .sim{display:inline}
 <body>
 
 <header class="topbar">
-  <div class="brand"><i></i>EmbeddingGemma 2 Local Search</div>
+  <div class="brand"><i></i>Semantic Search · OpenRouter</div>
   <button class="folder hidden" id="btnFolder" title="Change folder">
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
     <b id="folderName"></b>
@@ -153,7 +153,7 @@ body.scores .name .sim{display:inline}
       </button>
       <button class="button secondary hidden" id="btnContinue"></button>
     </div>
-    <div class="note">EmbeddingGemma 2 · text and images in the same space · runs locally</div>
+    <div class="note">NVIDIA embeddings via OpenRouter · index stored locally · content sent online</div>
   </div>
 </section>
 
@@ -238,13 +238,12 @@ async function poll(){
   try { status = await api('/status'); } catch(e){ return; }
   const m = status.model, pm = $('#pillModel');
   pm.querySelector('span:last-child').textContent =
-    m === 'ready' ? `EmbeddingGemma 2 · ${status.device.startsWith('mps') ? 'Apple GPU' : status.device.startsWith('cuda') ? 'NVIDIA GPU' : 'CPU'}` :
-    m === 'downloading' ? 'Downloading model (first run only)…' :
-    m === 'error' ? 'Could not load the model' : 'Loading model…';
+    m === 'ready' ? 'NVIDIA embeddings · OpenRouter' :
+    m === 'error' ? (status.model_error || 'OpenRouter configuration error') : 'Configuring OpenRouter…';
   pm.querySelector('.dot').style.background = m === 'ready' ? 'var(--accent)' : m === 'error' ? '#e5484d' : 'var(--warn)';
   const pn = $('#pillNet');
   pn.classList.toggle('offline', !status.online);
-  pn.querySelector('span:last-child').textContent = status.online ? 'Online' : 'Offline · everything on this computer';
+  pn.querySelector('span:last-child').textContent = status.online ? 'Online · embeddings sent to OpenRouter' : 'Offline · OpenRouter requires internet';
 
   const p = status.progress || {};
   if (p.active){ paintProgress(p); show('index'); }

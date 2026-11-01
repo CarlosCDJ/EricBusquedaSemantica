@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
-"""EmbeddingGemma 2 Local Search: pick a folder of photos and PDFs, index it with
-EmbeddingGemma 2, and search by what is *inside* the files, mixing text and
-images in a single result list.
+"""Semantic search over photos and PDFs, using OpenRouter for embeddings.
 
-Everything runs on this computer. Internet is only needed the first time, to
-download the model; after that the app starts in offline mode.
+Indexes remain on this computer, but images, PDF text and queries sent for
+embedding leave it. An internet connection and OPENROUTER_API_KEY are required.
 
 Usage:
   .venv/bin/python search.py                 # opens http://127.0.0.1:8765
@@ -13,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
 import functools
 import hashlib
 import json
@@ -29,13 +28,14 @@ import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 HERE = Path(__file__).resolve().parent
-os.environ.setdefault("HF_HOME", str(HERE / ".cache-hf"))  # keep the model next to the app
-os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 INDEXES = HERE / "indexes"
 WEB = HERE / "web"
-MODEL_ID = "google/embeddinggemma-2"
+MODEL_ID = "nvidia/llama-nemotron-embed-vl-1b-v2:free"
+EMBEDDINGS_URL = "https://openrouter.ai/api/v1/embeddings"
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif", ".bmp", ".gif", ".tif", ".tiff"}
 PDF_EXT = {".pdf"}
@@ -51,75 +51,66 @@ CODE_BOOST = 5.0    # z-score bonus for a text chunk containing a code from the 
 
 
 class Model:
-    """Loads EmbeddingGemma 2 once, in the background, and serialises access to it."""
+    """Generate normalized vectors remotely, keeping the original model interface."""
 
     def __init__(self) -> None:
-        self.status = "loading"
-        self.error = ""
-        self.device = ""
+        self._key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+        self.status = "ready" if self._key else "error"
+        self.error = "" if self._key else "Set OPENROUTER_API_KEY and restart the application."
+        self.device = "OpenRouter"
         self.load_seconds = 0.0
-        self._m = None
         self._lock = threading.Lock()
         # Changing the filter re-runs the same query: don't embed it again.
         self.embed_query = functools.lru_cache(maxsize=256)(self._embed_query)
-        threading.Thread(target=self._load, daemon=True).start()
-
-    def _load(self) -> None:
-        t0 = time.perf_counter()
-        try:
-            import torch
-            from sentence_transformers import SentenceTransformer
-
-            device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
-            kw = dict(device=device, config_kwargs={"audio_config": None})  # text + image encoders only
-            try:
-                # Already downloaded? Then don't even try to reach the network.
-                os.environ["HF_HUB_OFFLINE"] = "1"
-                self._m = SentenceTransformer(MODEL_ID, local_files_only=True, **kw)
-            except Exception:
-                os.environ["HF_HUB_OFFLINE"] = "0"
-                self.status = "downloading"
-                self._m = SentenceTransformer(MODEL_ID, **kw)
-                os.environ["HF_HUB_OFFLINE"] = "1"
-            self.device = str(self._m.device)
-            self._warm_up()
-            self.load_seconds = round(time.perf_counter() - t0, 1)
-            self.status = "ready"
-        except Exception as e:
-            self.status = "error"
-            self.error = f"{type(e).__name__}: {e}"
-            traceback.print_exc()
-
-    def _warm_up(self) -> None:
-        # The first pass through the GPU is slow: do it now, not on the user's first search.
-        import tempfile
-
-        from PIL import Image
-
-        path = Path(tempfile.gettempdir()) / "embeddinggemma2_localsearch_warmup.jpg"
-        Image.new("RGB", (256, 256), (120, 140, 160)).save(path)
-        for text in ("warming up", "a slightly longer test query to warm up the model"):
-            self._m.encode(text, prompt_name="SearchQuery")
-        self._m.encode([{"image": str(path)}])
-        self._m.encode(["a test document"], prompt_name="Document")
 
     def ready(self) -> bool:
         return self.status == "ready"
 
+    def _embed(self, input_data, input_type: str):
+        import numpy as np
+
+        if not self._key:
+            raise RuntimeError(self.error)
+        payload = {"model": MODEL_ID, "input": input_data, "input_type": input_type,
+                   "encoding_format": "float"}
+        request = Request(EMBEDDINGS_URL, data=json.dumps(payload).encode("utf-8"),
+                          headers={"Authorization": f"Bearer {self._key}",
+                                   "Content-Type": "application/json"}, method="POST")
+        try:
+            with self._lock, urlopen(request, timeout=90) as response:
+                data = json.load(response)
+        except HTTPError as e:
+            # Avoid printing provider responses: they may contain input or credentials.
+            raise RuntimeError(f"OpenRouter returned HTTP {e.code}. Check the key, quota and model availability.") from None
+        except (URLError, TimeoutError, OSError):
+            raise RuntimeError("Could not reach OpenRouter. Check the internet connection and try again.") from None
+        try:
+            vector = np.asarray(data["data"][0]["embedding"], dtype=np.float32)
+            norm = np.linalg.norm(vector)
+            if vector.ndim != 1 or not vector.size or not np.isfinite(vector).all() or not np.isfinite(norm) or norm == 0:
+                raise ValueError("invalid vector")
+            return vector / norm
+        except (KeyError, IndexError, TypeError, ValueError):
+            raise RuntimeError("OpenRouter returned an invalid embedding.") from None
+
     def embed_images(self, paths: list[str], batch: int = 8):
-        with self._lock:
-            return self._m.encode([{"image": p} for p in paths], batch_size=batch,
-                                  normalize_embeddings=True, convert_to_numpy=True)
+        import numpy as np
+
+        vectors = []
+        for path in paths:
+            encoded = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+            image = [{"content": [{"type": "image_url", "image_url": {
+                "url": f"data:image/jpeg;base64,{encoded}"}}]}]
+            vectors.append(self._embed(image, "passage"))
+        return np.stack(vectors)
 
     def embed_documents(self, texts: list[str], batch: int = 16):
-        with self._lock:
-            return self._m.encode(texts, prompt_name="Document", batch_size=batch,
-                                  normalize_embeddings=True, convert_to_numpy=True)
+        import numpy as np
+
+        return np.stack([self._embed(text, "passage") for text in texts])
 
     def _embed_query(self, text: str):
-        with self._lock:
-            return self._m.encode(text, prompt_name="SearchQuery",
-                                  normalize_embeddings=True, convert_to_numpy=True)
+        return self._embed(text, "query")
 
 
 # ------------------------------------------------------------------ index
@@ -197,6 +188,8 @@ class Index:
         if not (d / "vectors.npy").exists():
             return False
         data = json.loads((d / "index.json").read_text(encoding="utf-8"))
+        if data.get("settings") != settings():
+            return False  # Never search an index made with another model or settings.
         self.folder, self.dir = folder, d
         self.items, self.rows = data["items"], data["rows"]
         self.folded = [fold(r.get("text", "")) for r in self.rows]
@@ -356,7 +349,7 @@ class Index:
             # Vectors: first every image (photos, screenshots, PDF pages), then the PDF text.
             p.update(phase="Reading images", done=0, total=len(pending_images) + len(pending_texts))
             rows, blocks = [], []
-            batch = 8
+            batch = 1  # One remote request at a time, so progress stays visible.
             for i in range(0, len(pending_images), batch):
                 part = pending_images[i : i + batch]
                 p["current"] = items[part[0][0]]["rel"]
@@ -365,7 +358,7 @@ class Index:
                 p["done"] += len(part)
 
             p["phase"] = "Reading PDF text"
-            batch = 16
+            batch = 1
             for i in range(0, len(pending_texts), batch):
                 part = pending_texts[i : i + batch]
                 p["current"] = items[part[0][0]]["rel"]
@@ -575,7 +568,7 @@ def make_handler(model: Model, index: Index):
 
         def _can_search(self) -> bool:
             if not model.ready():
-                self._json({"error": "The model is still loading"}, 503)
+                self._json({"error": model.error or "The model is not ready"}, 503)
                 return False
             if index.vectors is None:
                 self._json({"error": "Pick and index a folder first"}, 409)
@@ -638,6 +631,8 @@ def make_handler(model: Model, index: Index):
                 self._json({"error": "not found"}, 404)
             except (KeyError, IndexError, ValueError) as e:
                 self._json({"error": str(e)}, 400)
+            except RuntimeError as e:
+                self._json({"error": str(e)}, 503)
 
         def do_POST(self):
             if not self._local():
@@ -660,7 +655,7 @@ def make_handler(model: Model, index: Index):
                         (INDEXES / "last.txt").write_text(str(folder), encoding="utf-8")
                         return self._json({"ok": True, "already_indexed": True})
                     if not model.ready():
-                        return self._json({"error": "The model is still loading"}, 503)
+                        return self._json({"error": model.error or "The model is not ready"}, 503)
                     threading.Thread(target=index.build, args=(folder, model), daemon=True).start()
                     return self._json({"ok": True})
                 if u.path == "/search-image":
@@ -718,7 +713,7 @@ def open_window(url: str) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Local semantic search over photos and PDFs with EmbeddingGemma 2.")
+    ap = argparse.ArgumentParser(description="Semantic search over photos and PDFs using OpenRouter embeddings.")
     ap.add_argument("--port", type=int, default=8765, help="port for the local web UI (default 8765)")
     ap.add_argument("--no-window", action="store_true", help="only start the server, don't open a window")
     args = ap.parse_args()
@@ -733,7 +728,7 @@ def main() -> None:
     # Bound to 127.0.0.1 only: not reachable from other machines on the network.
     server = ThreadingHTTPServer(("127.0.0.1", args.port), make_handler(model, index))
     url = f"http://127.0.0.1:{args.port}"
-    print(f"EmbeddingGemma 2 Local Search running at {url}  (Ctrl+C to stop)", flush=True)
+    print(f"OpenRouter Semantic Search running at {url}  (Ctrl+C to stop)", flush=True)
     if not args.no_window:
         open_window(url)
     try:
